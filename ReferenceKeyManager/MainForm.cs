@@ -4,12 +4,14 @@ using System.ComponentModel;
 using System.Data;
 using System.Drawing;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Inventor;
 using Newtonsoft.Json.Linq;
 using ReferenceKeyManager.Properties;
+using File = System.IO.File;
 
 namespace ReferenceKeyManager
 {
@@ -23,6 +25,7 @@ namespace ReferenceKeyManager
         const string kDefault0 = kDefault + " [0]";
         const string kContext = "context";
         const string kReference = "reference";
+        private int _contextPointer = 0;
 
         public MainForm(Inventor.Application app)
         {
@@ -56,7 +59,7 @@ namespace ReferenceKeyManager
                     MessageBox.Show(ex.Message, "Could not save data");
                 }
             }
-            
+
             HandlingCode = HandlingCodeEnum.kEventHandled;
         }
 
@@ -73,7 +76,7 @@ namespace ReferenceKeyManager
                     MessageBox.Show(ex.Message, "Could not load data");
                 }
             }
-              
+
             HandlingCode = HandlingCodeEnum.kEventHandled;
         }
 
@@ -86,6 +89,8 @@ namespace ReferenceKeyManager
 
         private void LoadData()
         {
+            Inventor.ReferenceKeyManager rkm = m_app.ActiveDocument.ReferenceKeyManager;
+            _contextPointer = rkm.CreateKeyContext();
             ReferenceKeysTreeView.Nodes.Clear();
 
             bool loaded = m_docsWithContexts.Contains(m_app.ActiveDocument.InternalName);
@@ -131,7 +136,7 @@ namespace ReferenceKeyManager
                 m_docsWithContexts.Add(m_app.ActiveDocument.InternalName);
             }
         }
-   
+
         private void SaveData()
         {
             JObject root = new JObject();
@@ -182,16 +187,17 @@ namespace ReferenceKeyManager
 
         private int GetContextIndex(string context)
         {
-            string id = context.Split(new char[] { '[', ']' })[1];
-            return int.Parse(id);
+            //string id = context.Split(new char[] { '[', ']' })[1];
+            //return int.Parse(id);
+            return _contextPointer;
         }
 
         private string GetContextString(string context)
         {
-            return context.Split(new char[] { ' ' })[0];
+            return context; //.Split(new char[] { ' ' })[0];
         }
 
-        private byte [] GetContextBytes(string context) 
+        private byte[] GetContextBytes(string context)
         {
             byte[] bytes = new byte[] { };
             context = GetContextString(context);
@@ -219,7 +225,7 @@ namespace ReferenceKeyManager
             GetContextAndKey(ReferenceKeysTreeView.SelectedNode, out context, out key);
             int i = GetContextIndex(context);
 
-            try 
+            try
             {
                 byte[] bytes = new byte[] { };
                 rkm.StringToKey(key, ref bytes);
@@ -254,8 +260,7 @@ namespace ReferenceKeyManager
         private int CreateContext(out string context)
         {
             Inventor.ReferenceKeyManager rkm = m_app.ActiveDocument.ReferenceKeyManager;
-
-            int index = rkm.CreateKeyContext();
+            int index = _contextPointer;
 
             byte[] bytes = new byte[] { };
             rkm.SaveContextToArray(index, ref bytes);
@@ -274,16 +279,16 @@ namespace ReferenceKeyManager
             {
                 TreeNode existingNode = ReferenceKeysTreeView.Nodes.Find(context, false)[0];
                 ReferenceKeysTreeView.SelectedNode = existingNode;
-                
-                Inventor.ReferenceKeyManager rkm = m_app.ActiveDocument.ReferenceKeyManager;
-                rkm.ReleaseKeyContext(i);
+
+                //Inventor.ReferenceKeyManager rkm = m_app.ActiveDocument.ReferenceKeyManager;
+                //rkm.ReleaseKeyContext(i);
 
                 MessageBox.Show("A suitable context already exists and is now highlighted in the Browser", "Duplicate context");
 
                 return;
             }
 
-            TreeNode node = ReferenceKeysTreeView.Nodes.Add(context, $"{context} [{i}]");
+            TreeNode node = ReferenceKeysTreeView.Nodes.Add(context);
             node.ImageKey = kContext;
             node.SelectedImageKey = kContext;
             node.EnsureVisible();
@@ -320,10 +325,17 @@ namespace ReferenceKeyManager
                     return;
                 }
 
-                TreeNode node = ReferenceKeysTreeView.SelectedNode.Nodes.Add(key, key);
+                TreeNode node = ReferenceKeysTreeView.SelectedNode.Nodes.Add(key); //, key
                 node.ImageKey = kReference;
                 node.SelectedImageKey = kReference;
                 node.EnsureVisible();
+                if (!ReferenceKeysTreeView.SelectedNode.Nodes.ContainsKey(key))
+                {
+                    TreeNode contexTreeNode = node.Parent;
+                    CreateContext(out string strcontext);
+                    contexTreeNode.Text = strcontext;
+                    AddToExcel(strcontext, key);
+                }
             }
             catch (Exception ex)
             {
@@ -352,5 +364,94 @@ namespace ReferenceKeyManager
                 EnsureDefaultContext();
             }
         }
+
+
+        private Microsoft.Office.Interop.Excel.Application objExcelApp = new Microsoft.Office.Interop.Excel.Application();
+        private Microsoft.Office.Interop.Excel.Workbooks objBooks;
+        private Microsoft.Office.Interop.Excel.Workbook objBook;
+        private Microsoft.Office.Interop.Excel.Sheets objSheets;
+        private Microsoft.Office.Interop.Excel.Worksheet objSheet;
+        private Microsoft.Office.Interop.Excel.Range aRange;
+        private int edgeCounter = 0;
+        private int faceCounter = 0;
+        private void AddToExcel(string keyContext, string key)
+        {
+            objBooks = objExcelApp.Workbooks;
+            string path = System.Environment.GetFolderPath(System.Environment.SpecialFolder.Desktop);
+            path += @"\ReferenceKeyData.xlsx";
+            if (!File.Exists(path))
+            {
+                objBook = objBooks.Add(Missing.Value);
+                objSheets = objBook.Worksheets;
+                objSheet = (Microsoft.Office.Interop.Excel.Worksheet)objSheets.get_Item(1);
+                objSheet.Name = "Topology";
+                objSheet.Cells[1, 1] = "Edge Identifier";
+                objSheet.Cells[1, 2] = "keyContext";
+                objSheet.Cells[1, 3] = "key";
+                objSheet.Cells[1, 5] = "Face Identifier";
+                objSheet.Cells[1, 6] = "keyContext";
+                objSheet.Cells[1, 7] = "key";
+                aRange = objSheet.get_Range("A1", "G100");
+                 aRange.Columns.AutoFit();
+            }
+            else
+            {
+                if (IsFileOpen(path))
+                {
+                    objSheet = objBook.Worksheets["Topology"];
+                }
+                else
+                {
+                    objBook = objBooks.Open(path);
+                    objSheet = objBook.Worksheets["Topology"];
+                }
+                aRange = objSheet.get_Range("A1", "G100");
+            }
+            objBook.Activate();
+            objExcelApp.Visible = true;
+            SelectSet ss = m_app.ActiveDocument.SelectSet;
+            switch (ss[1])
+            {
+                case Edge edge:
+                    edgeCounter++;
+                    objSheet.Cells[edgeCounter + 1, 1] = "Edge" + edgeCounter.ToString();
+                    objSheet.Cells[edgeCounter + 1, 2] = keyContext;
+                    objSheet.Cells[edgeCounter + 1, 3] = key;
+                    break;
+                case Face face:
+                    faceCounter++;
+                    objSheet.Cells[faceCounter + 1, 5] = "Face" + faceCounter.ToString();
+                    objSheet.Cells[faceCounter + 1, 6] = keyContext;
+                    objSheet.Cells[faceCounter + 1, 7] = key;
+                    break;
+            }
+
+           
+            if (!File.Exists(path))
+            {
+                objBook.SaveAs(path);
+            }
+            else
+            {
+                objBook.Save();
+            }
+        }
+
+
+        private bool IsFileOpen(string filePath)
+        {
+            bool rtnvalue = false;
+            try
+            {
+                System.IO.FileStream fs = System.IO.File.OpenWrite(filePath);
+                fs.Close();
+            }
+            catch (System.IO.IOException ex)
+            {
+                rtnvalue = true;
+            }
+            return rtnvalue;
+        }
+
     }
 }
